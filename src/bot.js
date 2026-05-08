@@ -2,14 +2,9 @@
 // -----------------------------------------------------------------------------
 // Configuração do bot do Telegram usando Telegraf.
 //
-// Fluxo de premium/free:
-//   1. O usuário clica em "Abrir no Telegram" no site shopeedownloader.com.
-//      O site gera um token de uso único e abre t.me/<bot>?start=<token>.
-//   2. O Telegram dispara /start <token> aqui — chamamos linkAccount() que
-//      vincula o telegram_id ao user_id no banco do site.
-//   3. A cada link que o usuário envia, chamamos registerDownload() ANTES de
-//      extrair o vídeo. O site é quem decide se libera (premium = ilimitado;
-//      free = até 10). Isso evita race conditions e mantém o contador no DB.
+// Este arquivo apenas EXPORTA a instância do bot — quem decide se vai rodar
+// como webhook (na Vercel) ou em modo polling (localmente, opcional) é o
+// `api/webhook.js` ou um runner local.
 // -----------------------------------------------------------------------------
 
 require('dotenv').config();
@@ -20,17 +15,8 @@ const {
   isShopeeUrl,
   downloadVideoBuffer,
 } = require('./services/shopee');
-const {
-  linkAccount,
-  getUserStatus,
-  registerDownload,
-} = require('./services/siteApi');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SITE_URL = (process.env.SITE_PUBLIC_URL || 'https://shopeedownloader.com').replace(
-  /\/$/,
-  '',
-);
 
 if (!BOT_TOKEN) {
   throw new Error('BOT_TOKEN não definido. Configure a variável de ambiente.');
@@ -41,58 +27,19 @@ const bot = new Telegraf(BOT_TOKEN, {
 });
 
 // ---------------------------------------------------------------------------
-// /start — boas-vindas + vínculo via deep link
+// /start — boas-vindas
 // ---------------------------------------------------------------------------
 bot.start(async (ctx) => {
   const name = ctx.from?.first_name || 'amigo(a)';
-  // Telegraf preenche `ctx.startPayload` com o que vier após "/start ".
-  const token = (ctx.startPayload || '').trim();
-
-  // Sem token → orienta o usuário a entrar pelo site.
-  if (!token) {
-    await ctx.reply(
-      `👋 Olá, ${name}!\n\n` +
-        `Para usar o bot, você precisa vincular sua conta do *Shopee Downloader*.\n\n` +
-        `🔗 Acesse o site e clique em *Abrir no Telegram*:\n${SITE_URL}\n\n` +
-        `Use /status para ver seu plano depois de vincular.`,
-      { parse_mode: 'Markdown', disable_web_page_preview: true },
-    );
-    return;
-  }
-
-  // Com token → tenta vincular.
-  try {
-    const result = await linkAccount({
-      token,
-      telegramId: ctx.from.id,
-      firstName: ctx.from.first_name,
-      username: ctx.from.username,
-    });
-
-    const planLine = result.premium
-      ? '⭐ Plano: *Premium* — downloads ilimitados!'
-      : `🆓 Plano: *Free* — ${result.used}/${result.limit ?? 10} downloads usados.`;
-
-    await ctx.reply(
-      `✅ Conta vinculada com sucesso, ${name}!\n\n` +
-        `${planLine}\n\n` +
-        `Agora é só me enviar o link de qualquer vídeo da Shopee. 🎬`,
-      { parse_mode: 'Markdown' },
-    );
-  } catch (error) {
-    console.error('[bot] erro ao vincular conta:', error.code, error.message);
-    if (error.code === 'LINK_TOKEN_INVALID') {
-      await ctx.reply(
-        `⚠️ Esse link de vínculo expirou ou já foi usado.\n\n` +
-          `Volte ao site e clique novamente em *Abrir no Telegram*:\n${SITE_URL}`,
-        { parse_mode: 'Markdown', disable_web_page_preview: true },
-      );
-    } else {
-      await ctx.reply(
-        '😓 Não consegui vincular sua conta agora. Tente novamente em instantes.',
-      );
-    }
-  }
+  await ctx.reply(
+    `👋 Olá, ${name}!\n\n` +
+      `Eu baixo vídeos da *Shopee* pra você. 🎬\n\n` +
+      `📌 *Como usar:*\n` +
+      `Cole aqui o link do vídeo (ex.: https://shopee.com.br/... ou https://br.shp.ee/...) ` +
+      `e eu envio o arquivo prontinho pra você salvar.\n\n` +
+      `Use /help se tiver dúvidas.`,
+    { parse_mode: 'Markdown' },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -101,52 +48,12 @@ bot.start(async (ctx) => {
 bot.help(async (ctx) => {
   await ctx.reply(
     `ℹ️ *Ajuda*\n\n` +
-      `1️⃣ Vincule sua conta entrando pelo site:\n${SITE_URL}\n` +
-      `2️⃣ Cole o link do vídeo da Shopee aqui no chat.\n` +
+      `1️⃣ Copie o link do vídeo na Shopee.\n` +
+      `2️⃣ Cole aqui no chat.\n` +
       `3️⃣ Aguarde alguns segundos — eu envio o vídeo.\n\n` +
-      `📊 /status — ver seu plano e downloads restantes.`,
-    { parse_mode: 'Markdown', disable_web_page_preview: true },
+      `Se algo der errado, tente novamente em instantes. 🙏`,
+    { parse_mode: 'Markdown' },
   );
-});
-
-// ---------------------------------------------------------------------------
-// /status — mostra plano e cota
-// ---------------------------------------------------------------------------
-bot.command('status', async (ctx) => {
-  try {
-    const status = await getUserStatus(ctx.from.id);
-
-    if (!status.linked) {
-      await ctx.reply(
-        `🔒 Sua conta ainda não está vinculada.\n\n` +
-          `Acesse ${SITE_URL} e clique em *Abrir no Telegram* para começar.`,
-        { parse_mode: 'Markdown', disable_web_page_preview: true },
-      );
-      return;
-    }
-
-    if (status.premium) {
-      await ctx.reply('⭐ Você é *Premium* — downloads ilimitados!', {
-        parse_mode: 'Markdown',
-      });
-      return;
-    }
-
-    const limit = status.limit ?? 10;
-    const remaining = Math.max(0, limit - status.used);
-    await ctx.reply(
-      `🆓 Plano *Free*\n\n` +
-        `📥 Downloads usados: *${status.used}/${limit}*\n` +
-        `✨ Restantes: *${remaining}*\n\n` +
-        (remaining === 0
-          ? `Para downloads ilimitados, faça upgrade em ${SITE_URL}`
-          : `Quando acabar, faça upgrade em ${SITE_URL}`),
-      { parse_mode: 'Markdown', disable_web_page_preview: true },
-    );
-  } catch (error) {
-    console.error('[bot] erro em /status:', error.code, error.message);
-    await ctx.reply('😓 Não consegui consultar seu status agora.');
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -168,68 +75,26 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // 1) Pede ao site para autorizar o download (atômico — sem race condition).
-  let quota;
-  try {
-    quota = await registerDownload(ctx.from.id);
-  } catch (error) {
-    console.error('[bot] erro ao registrar download:', error.code, error.message);
-    if (error.code === 'NOT_LINKED') {
-      await ctx.reply(
-        `🔒 Sua conta ainda não está vinculada.\n\n` +
-          `Acesse ${SITE_URL} e clique em *Abrir no Telegram* para liberar os downloads.`,
-        { parse_mode: 'Markdown', disable_web_page_preview: true },
-      );
-      return;
-    }
-    await ctx.reply('😓 Não consegui validar sua conta agora. Tente de novo em instantes.');
-    return;
-  }
-
-  // 2) Limite atingido para usuário free.
-  if (!quota.allowed) {
-    const limit = quota.limit ?? 10;
-    await ctx.reply(
-      `🚫 Você atingiu o limite gratuito de *${limit} downloads*.\n\n` +
-        `⭐ Faça upgrade para *Premium* e tenha downloads ilimitados:\n${SITE_URL}`,
-      { parse_mode: 'Markdown', disable_web_page_preview: true },
-    );
-    return;
-  }
-
-  // 3) Autorizado — mostra indicador nativo "enviando vídeo..." e processa.
-  // Não mandamos mensagem de status: o sendChatAction já dá o feedback visual,
-  // e o usuário só vê o vídeo aparecer (sem mensagem extra "presa" no chat).
+  // Mostra indicador nativo "enviando vídeo..." enquanto processa.
   const keepTyping = startChatAction(ctx, 'upload_video');
 
   try {
-    console.log('[bot] solicitando extração:', {
-      user: ctx.from?.id,
-      premium: quota.premium,
-      used: quota.used,
-      limit: quota.limit,
-    });
+    console.log('[bot] solicitando extração:', { user: ctx.from?.id, url: text });
 
-    // 3.1) Pega o videoUrl da API extratora.
+    // 1) Pega o videoUrl da API extratora.
     const { videoUrl, caption } = await extractShopeeVideo(text);
 
-    // 3.2) Baixa o vídeo da CDN para um Buffer. Isso é fundamental:
-    // se passássemos só a URL ao Telegram, ele tentaria buscar a CDN e
-    // falharia em vídeos > ~20MB ou quando a CDN exige headers.
+    // 2) Baixa o vídeo da CDN para um Buffer (evita o limite de ~20MB que
+    //    o Telegram aplica quando recebe sendVideo com URL externa).
     console.log('[bot] baixando vídeo da CDN...');
     const buffer = await downloadVideoBuffer(videoUrl);
     console.log('[bot] vídeo baixado:', `${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
 
-    let captionText = caption ? `🎬 ${caption}` : '🎬 Aqui está seu vídeo!';
-    if (!quota.premium && quota.remaining !== null) {
-      captionText += `\n\n📊 Downloads restantes: ${quota.remaining}`;
-    }
-
-    // 3.3) Faz upload multipart para o Telegram.
+    // 3) Faz upload multipart para o Telegram.
     await ctx.replyWithVideo(
       { source: buffer, filename: 'shopee-video.mp4' },
       {
-        caption: captionText,
+        caption: caption ? `🎬 ${caption}` : '🎬 Aqui está seu vídeo!',
         supports_streaming: true,
       },
     );
@@ -244,22 +109,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-/**
- * Mantém o indicador "enviando vídeo..." aparecendo enquanto o bot processa.
- * O Telegram limpa o sendChatAction sozinho a cada ~5s, então renovamos.
- *
- * @param {import('telegraf').Context} ctx
- * @param {'upload_video' | 'upload_document' | 'typing'} action
- */
-function startChatAction(ctx, action) {
-  const tick = () => ctx.sendChatAction(action).catch(() => {});
-  tick();
-  const interval = setInterval(tick, 4500);
-  return {
-    stop: () => clearInterval(interval),
-  };
-}
-
 bot.catch((err, ctx) => {
   console.error('[bot] erro não tratado:', err);
   if (ctx && ctx.reply) {
@@ -268,6 +117,17 @@ bot.catch((err, ctx) => {
       .catch(() => {});
   }
 });
+
+/**
+ * Mantém o indicador "enviando vídeo..." aparecendo enquanto o bot processa.
+ * O Telegram limpa o sendChatAction sozinho a cada ~5s, então renovamos.
+ */
+function startChatAction(ctx, action) {
+  const tick = () => ctx.sendChatAction(action).catch(() => {});
+  tick();
+  const interval = setInterval(tick, 4500);
+  return { stop: () => clearInterval(interval) };
+}
 
 function mapErrorToMessage(error) {
   switch (error.code) {
@@ -284,7 +144,7 @@ function mapErrorToMessage(error) {
     case 'VIDEO_DOWNLOAD_TIMEOUT':
       return '⌛ O vídeo demorou demais para baixar. Tente novamente em instantes.';
     case 'VIDEO_TOO_LARGE':
-      return '📦 Esse vídeo é maior que o limite do Telegram (50MB). Tente outro.';
+      return '📦 Esse vídeo é maior que o limite do Telegram (50MB). Baixe pelo site shopeedownloader.com';
     case 'VIDEO_DOWNLOAD_FAILED':
       return '😓 Não consegui baixar o vídeo da Shopee. Tente novamente.';
     default:
