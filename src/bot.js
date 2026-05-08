@@ -27,6 +27,39 @@ const bot = new Telegraf(BOT_TOKEN, {
 });
 
 // ---------------------------------------------------------------------------
+// Função utilitária para manter o indicador "enviando..." aparecendo
+// ---------------------------------------------------------------------------
+function startChatAction(ctx, action) {
+  const tick = () => ctx.sendChatAction(action).catch(() => {});
+  tick();
+  const interval = setInterval(tick, 4500);
+  return { stop: () => clearInterval(interval) };
+}
+
+function mapErrorToMessage(error) {
+  switch (error.code) {
+    case 'INVALID_URL':
+      return '⚠️ Essa URL não parece válida. Verifique o link e tente novamente.';
+    case 'TIMEOUT':
+      return '⌛ A API demorou demais para responder. Tente de novo em instantes.';
+    case 'API_OFFLINE':
+      return '🚫 O serviço de extração está fora do ar agora. Tente mais tarde.';
+    case 'API_HTTP_ERROR':
+      return '😓 Houve um problema na API ao processar seu link. Tente outro vídeo.';
+    case 'API_NO_VIDEO':
+      return '🤔 Não consegui encontrar um vídeo nesse link. Confira se ele realmente contém um vídeo.';
+    case 'VIDEO_DOWNLOAD_TIMEOUT':
+      return '⌛ O vídeo demorou demais para baixar. Tente novamente em instantes.';
+    case 'VIDEO_TOO_LARGE':
+      return '📦 Esse vídeo é maior que o limite do Telegram (50MB). Baixe pelo site shopeedownloader.com';
+    case 'VIDEO_DOWNLOAD_FAILED':
+      return '😓 Não consegui baixar o vídeo da Shopee. Tente novamente.';
+    default:
+      return '❌ Algo deu errado. Tente novamente em alguns segundos.';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // /start — boas-vindas
 // ---------------------------------------------------------------------------
 bot.start(async (ctx) => {
@@ -117,39 +150,5 @@ bot.catch((err, ctx) => {
       .catch(() => {});
   }
 });
-
-/**
- * Mantém o indicador "enviando vídeo..." aparecendo enquanto o bot processa.
- * O Telegram limpa o sendChatAction sozinho a cada ~5s, então renovamos.
- */
-function startChatAction(ctx, action) {
-  const tick = () => ctx.sendChatAction(action).catch(() => {});
-  tick();
-  const interval = setInterval(tick, 4500);
-  return { stop: () => clearInterval(interval) };
-}
-
-function mapErrorToMessage(error) {
-  switch (error.code) {
-    case 'INVALID_URL':
-      return '⚠️ Essa URL não parece válida. Verifique o link e tente novamente.';
-    case 'TIMEOUT':
-      return '⌛ A API demorou demais para responder. Tente de novo em instantes.';
-    case 'API_OFFLINE':
-      return '🚫 O serviço de extração está fora do ar agora. Tente mais tarde.';
-    case 'API_HTTP_ERROR':
-      return '😓 Houve um problema na API ao processar seu link. Tente outro vídeo.';
-    case 'API_NO_VIDEO':
-      return '🤔 Não consegui encontrar um vídeo nesse link. Confira se ele realmente contém um vídeo.';
-    case 'VIDEO_DOWNLOAD_TIMEOUT':
-      return '⌛ O vídeo demorou demais para baixar. Tente novamente em instantes.';
-    case 'VIDEO_TOO_LARGE':
-      return '📦 Esse vídeo é maior que o limite do Telegram (50MB). Baixe pelo site shopeedownloader.com';
-    case 'VIDEO_DOWNLOAD_FAILED':
-      return '😓 Não consegui baixar o vídeo da Shopee. Tente novamente.';
-    default:
-      return '❌ Algo deu errado. Tente novamente em alguns segundos.';
-  }
-}
 
 module.exports = bot;

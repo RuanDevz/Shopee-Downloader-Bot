@@ -48,7 +48,7 @@ module.exports = async (req, res) => {
     const update =
       typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
 
-    await bot.handleUpdate(update, res);
+    await bot.handleUpdate(update);
 
     // Se o Telegraf não enviou resposta (ex.: nenhum middleware fez `res.end`),
     // garantimos um 200 OK para o Telegram não reenviar o update.
