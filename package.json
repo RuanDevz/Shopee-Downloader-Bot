@@ -1,0 +1,30 @@
+{
+  "name": "telegram-shopee-bot",
+  "version": "1.0.0",
+  "description": "Bot de Telegram que baixa vídeos da Shopee a partir de uma URL.",
+  "main": "src/bot.js",
+  "scripts": {
+    "dev": "node src/bot.js",
+    "start": "node src/bot.js",
+    "set-webhook": "node scripts/set-webhook.js",
+    "delete-webhook": "node scripts/delete-webhook.js"
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "telegraf": "^4.16.3"
+  },
+  "keywords": [
+    "telegram",
+    "telegraf",
+    "shopee",
+    "vercel",
+    "serverless",
+    "bot"
+  ],
+  "author": "",
+  "license": "MIT"
+}
