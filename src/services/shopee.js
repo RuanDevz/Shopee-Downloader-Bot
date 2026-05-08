@@ -104,7 +104,55 @@ async function extractShopeeVideo(url) {
   }
 }
 
+/**
+ * Baixa o vídeo da CDN para um Buffer, para depois fazer upload multipart
+ * ao Telegram. Isso evita o limite de ~20MB que o Telegram aplica quando
+ * recebe sendVideo com uma URL externa.
+ *
+ * @param {string} videoUrl
+ * @returns {Promise<Buffer>}
+ * @throws {Error} com `code` legível.
+ */
+async function downloadVideoBuffer(videoUrl) {
+  // Telegram aceita até 50MB via Bot API (multipart). Cortamos um pouco antes
+  // para não estourar.
+  const MAX_BYTES = 49 * 1024 * 1024;
+
+  try {
+    const response = await axios.get(videoUrl, {
+      responseType: 'arraybuffer',
+      timeout: 25_000,
+      maxContentLength: MAX_BYTES,
+      maxBodyLength: MAX_BYTES,
+      headers: {
+        // Alguns CDNs bloqueiam clientes sem User-Agent.
+        'User-Agent':
+          'Mozilla/5.0 (compatible; ShopeeDownloaderBot/1.0; +https://shopeedownloader.com)',
+        Accept: 'video/mp4,video/*;q=0.9,*/*;q=0.5',
+      },
+    });
+
+    return Buffer.from(response.data);
+  } catch (error) {
+    if (error.code === 'ECONNABORTED') {
+      const err = new Error('Download do vídeo demorou demais.');
+      err.code = 'VIDEO_DOWNLOAD_TIMEOUT';
+      throw err;
+    }
+    if (error.message && error.message.includes('maxContentLength')) {
+      const err = new Error('Vídeo maior que o limite suportado pelo Telegram (50MB).');
+      err.code = 'VIDEO_TOO_LARGE';
+      throw err;
+    }
+    const err = new Error('Falha ao baixar o vídeo da CDN.');
+    err.code = 'VIDEO_DOWNLOAD_FAILED';
+    err.cause = error;
+    throw err;
+  }
+}
+
 module.exports = {
   extractShopeeVideo,
   isShopeeUrl,
+  downloadVideoBuffer,
 };
