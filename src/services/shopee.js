@@ -17,9 +17,12 @@ const DEFAULT_API_URL =
 const REQUEST_TIMEOUT_MS = 20_000;
 
 // Regex usada para validar (de forma simples) se a string parece um link da Shopee.
-// Cobre os domínios mais comuns: shopee.com.br, shopee.com, sho.pe, s.shopee.com.br etc.
+// Cobre os domínios mais comuns:
+//   - shopee.com.br, shopee.com, shopee.sg, s.shopee.com.br ...
+//   - sho.pe (encurtador antigo)
+//   - shp.ee / br.shp.ee (encurtador atual de compartilhamento, ex.: https://br.shp.ee/d2vuc39n)
 const SHOPEE_URL_REGEX =
-  /^https?:\/\/([a-z0-9-]+\.)*(shopee\.[a-z.]+|sho\.pe)(\/[^\s]*)?$/i;
+  /^https?:\/\/([a-z0-9-]+\.)*(shopee\.[a-z.]+|sho\.pe|shp\.ee)(\/[^\s]*)?$/i;
 
 /**
  * Verifica se uma string é uma URL válida da Shopee.
