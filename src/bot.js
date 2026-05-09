@@ -209,11 +209,16 @@ bot.command('upgrade', async (ctx) => {
         `✅ Downloads ilimitados\n` +
         `✅ Válido por *${PREMIUM_DURATION_DAYS} dias*\n` +
         `✅ PIX, cartão de crédito ou boleto\n\n` +
-        `👇 Clique no link abaixo pra pagar:\n${checkout.initPoint}\n\n` +
+        `👇 Toque no botão abaixo pra pagar.\n\n` +
         `_Assim que o pagamento for aprovado, eu te aviso aqui no chat e libero o acesso automaticamente._`,
       {
         parse_mode: 'Markdown',
         link_preview_options: { is_disabled: true },
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `💳 Pagar ${priceLabel()}`, url: checkout.initPoint }],
+          ],
+        },
       },
     );
   } catch (error) {
