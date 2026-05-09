@@ -15,6 +15,19 @@ const {
   isShopeeUrl,
   downloadVideoBuffer,
 } = require('./services/shopee');
+const {
+  FREE_DAILY_LIMIT,
+  PREMIUM_DURATION_DAYS,
+  isPremiumActive,
+  getOrCreateUser,
+  checkDownloadAllowance,
+  registerDownload,
+  createPendingPayment,
+} = require('./services/db');
+const {
+  PREMIUM_PRICE_CENTS,
+  createPremiumCheckout,
+} = require('./services/mercadopago');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
@@ -25,6 +38,19 @@ if (!BOT_TOKEN) {
 const bot = new Telegraf(BOT_TOKEN, {
   handlerTimeout: 25_000,
 });
+
+function priceLabel() {
+  const reais = (PREMIUM_PRICE_CENTS / 100).toFixed(2).replace('.', ',');
+  return `R$ ${reais}`;
+}
+
+function formatBRDate(date) {
+  return new Date(date).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Função utilitária para manter o indicador "enviando..." aparecendo
@@ -59,10 +85,33 @@ function mapErrorToMessage(error) {
   }
 }
 
+async function ensureUser(ctx) {
+  return getOrCreateUser({
+    telegramId: ctx.from.id,
+    firstName: ctx.from.first_name,
+    username: ctx.from.username,
+  });
+}
+
+function buildLimitReachedMessage() {
+  return (
+    `🚫 *Limite diário atingido!*\n\n` +
+    `Você já usou seus *${FREE_DAILY_LIMIT} downloads* gratuitos de hoje.\n\n` +
+    `💎 *Plano Premium — ${priceLabel()}*\n` +
+    `• Downloads *ilimitados* por *${PREMIUM_DURATION_DAYS} dias*\n` +
+    `• Sem espera, sem cota diária\n\n` +
+    `Use /upgrade para liberar agora.`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // /start — boas-vindas
 // ---------------------------------------------------------------------------
 bot.start(async (ctx) => {
+  await ensureUser(ctx).catch((err) =>
+    console.error('[bot] erro criando usuário:', err),
+  );
+
   const name = ctx.from?.first_name || 'amigo(a)';
   await ctx.reply(
     `👋 Olá, ${name}!\n\n` +
@@ -70,7 +119,9 @@ bot.start(async (ctx) => {
       `📌 *Como usar:*\n` +
       `Cole aqui o link do vídeo (ex.: https://shopee.com.br/... ou https://br.shp.ee/...) ` +
       `e eu envio o arquivo prontinho pra você salvar.\n\n` +
-      `Use /help se tiver dúvidas.`,
+      `🆓 Plano gratuito: *${FREE_DAILY_LIMIT} downloads por dia*\n` +
+      `💎 Plano Premium: *ilimitado por ${PREMIUM_DURATION_DAYS} dias* — use /upgrade\n\n` +
+      `Use /status pra ver seu plano e /help pra dúvidas.`,
     { parse_mode: 'Markdown' },
   );
 });
@@ -84,9 +135,93 @@ bot.help(async (ctx) => {
       `1️⃣ Copie o link do vídeo na Shopee.\n` +
       `2️⃣ Cole aqui no chat.\n` +
       `3️⃣ Aguarde alguns segundos — eu envio o vídeo.\n\n` +
+      `*Comandos:*\n` +
+      `/status — ver seu plano e downloads restantes\n` +
+      `/upgrade — assinar o Premium (${priceLabel()} / ${PREMIUM_DURATION_DAYS} dias ilimitado)\n\n` +
       `Se algo der errado, tente novamente em instantes. 🙏`,
     { parse_mode: 'Markdown' },
   );
+});
+
+// ---------------------------------------------------------------------------
+// /status — mostra plano atual e cota restante
+// ---------------------------------------------------------------------------
+bot.command('status', async (ctx) => {
+  try {
+    const user = await ensureUser(ctx);
+
+    if (isPremiumActive(user)) {
+      await ctx.reply(
+        `💎 *Plano: Premium*\n\n` +
+          `Downloads: *ilimitados*\n` +
+          `Válido até: *${formatBRDate(user.premium_until)}*\n\n` +
+          `Aproveite! 🚀`,
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const used =
+      user.last_download_date === today ? user.downloads_today : 0;
+    const remaining = Math.max(0, FREE_DAILY_LIMIT - used);
+
+    await ctx.reply(
+      `🆓 *Plano: Gratuito*\n\n` +
+        `Downloads hoje: *${used} / ${FREE_DAILY_LIMIT}*\n` +
+        `Restantes: *${remaining}*\n\n` +
+        `Quer ilimitado por ${PREMIUM_DURATION_DAYS} dias? Use /upgrade (${priceLabel()}).`,
+      { parse_mode: 'Markdown' },
+    );
+  } catch (error) {
+    console.error('[bot] erro em /status:', error);
+    await ctx.reply('😓 Não consegui consultar seu plano agora. Tente de novo.');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// /upgrade — gera link de pagamento do Mercado Pago
+// ---------------------------------------------------------------------------
+bot.command('upgrade', async (ctx) => {
+  try {
+    const user = await ensureUser(ctx);
+
+    if (isPremiumActive(user)) {
+      await ctx.reply(
+        `💎 Você já tem Premium ativo!\n\n` +
+          `Válido até: *${formatBRDate(user.premium_until)}*\n\n` +
+          `Se quiser estender, é só pagar de novo — os 30 dias somam ao tempo restante.`,
+        { parse_mode: 'Markdown' },
+      );
+    }
+
+    const checkout = await createPremiumCheckout({ telegramId: ctx.from.id });
+
+    await createPendingPayment({
+      telegramId: ctx.from.id,
+      externalReference: checkout.externalReference,
+      preferenceId: checkout.preferenceId,
+      amountCents: checkout.amountCents,
+    });
+
+    await ctx.reply(
+      `💎 *Plano Premium — ${priceLabel()}*\n\n` +
+        `✅ Downloads ilimitados\n` +
+        `✅ Válido por *${PREMIUM_DURATION_DAYS} dias*\n` +
+        `✅ PIX, cartão de crédito ou boleto\n\n` +
+        `👇 Clique no link abaixo pra pagar:\n${checkout.initPoint}\n\n` +
+        `_Assim que o pagamento for aprovado, eu te aviso aqui no chat e libero o acesso automaticamente._`,
+      {
+        parse_mode: 'Markdown',
+        link_preview_options: { is_disabled: true },
+      },
+    );
+  } catch (error) {
+    console.error('[bot] erro em /upgrade:', error);
+    await ctx.reply(
+      '😓 Não consegui gerar o link de pagamento agora. Tente novamente em instantes.',
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -105,6 +240,22 @@ bot.on('text', async (ctx) => {
         `\`https://shopee.com.br/...\` ou \`https://br.shp.ee/...\``,
       { parse_mode: 'Markdown' },
     );
+    return;
+  }
+
+  // ---------- Checagem de cota / plano ANTES de qualquer trabalho pesado ----
+  let user;
+  try {
+    user = await ensureUser(ctx);
+  } catch (error) {
+    console.error('[bot] erro carregando usuário:', error);
+    await ctx.reply('😓 Falha ao verificar seu plano. Tente novamente.');
+    return;
+  }
+
+  const allowance = await checkDownloadAllowance(user);
+  if (!allowance.allowed) {
+    await ctx.reply(buildLimitReachedMessage(), { parse_mode: 'Markdown' });
     return;
   }
 
@@ -131,6 +282,32 @@ bot.on('text', async (ctx) => {
         supports_streaming: true,
       },
     );
+
+    // 4) Só registra consumo de cota DEPOIS que o vídeo foi enviado com
+    //    sucesso — assim erros não consomem o limite do usuário.
+    try {
+      await registerDownload(user);
+    } catch (err) {
+      console.error('[bot] erro registrando download:', err);
+    }
+
+    // 5) Quando faltar pouco no plano free, lembra do upgrade.
+    if (allowance.reason === 'free_quota') {
+      const newRemaining = allowance.remaining - 1;
+      if (newRemaining === 1) {
+        await ctx.reply(
+          `⚠️ Resta *1 download* hoje no plano gratuito.\n` +
+            `Use /upgrade pra liberar ilimitado por ${PREMIUM_DURATION_DAYS} dias (${priceLabel()}).`,
+          { parse_mode: 'Markdown' },
+        );
+      } else if (newRemaining === 0) {
+        await ctx.reply(
+          `🛑 Esse foi seu último download gratuito de hoje.\n` +
+            `Pra continuar baixando, use /upgrade (${priceLabel()} / ${PREMIUM_DURATION_DAYS} dias ilimitado).`,
+          { parse_mode: 'Markdown' },
+        );
+      }
+    }
   } catch (error) {
     console.error('[bot] erro ao processar URL:', {
       code: error.code,

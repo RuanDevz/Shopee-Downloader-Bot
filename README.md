@@ -13,14 +13,18 @@ Bot de Telegram que recebe um link de vídeo da **Shopee** e devolve o arquivo d
 ```txt
 telegram-shopee-bot/
 ├── api/
-│   └── webhook.js          # Handler serverless da Vercel (recebe updates do Telegram)
+│   ├── webhook.js          # Handler serverless da Vercel (updates do Telegram)
+│   └── mp-webhook.js       # Handler serverless (notificações do Mercado Pago)
 ├── scripts/
 │   ├── set-webhook.js      # Registra o webhook no Telegram
-│   └── delete-webhook.js   # Remove o webhook
+│   ├── delete-webhook.js   # Remove o webhook
+│   └── schema.sql          # Schema do Supabase (rodar uma vez)
 ├── src/
 │   ├── bot.js              # Configuração do Telegraf, comandos e handlers
 │   └── services/
-│       └── shopee.js       # Cliente HTTP que consome a API extratora
+│       ├── shopee.js       # Cliente HTTP que consome a API extratora
+│       ├── db.js           # Acesso ao Supabase (usuários + cota + premium)
+│       └── mercadopago.js  # SDK do Mercado Pago (Checkout Pro)
 ├── .env.example
 ├── .gitignore
 ├── package.json
@@ -38,16 +42,45 @@ npm install
 cp .env.example .env
 ```
 
-Preencha o `.env`:
+Preencha o `.env` (veja `.env.example` para a lista completa):
 
 ```env
-BOT_TOKEN=123456:ABC...           # gerado no @BotFather
-SHOPEE_API_URL=https://hwdahtwlpjlwrmkgimvq.supabase.co/functions/v1/shopee-extractor
+# Telegram
+BOT_TOKEN=123456:ABC...
+BOT_USERNAME=ShopeeDownloaderBot
 TELEGRAM_WEBHOOK_SECRET=uma-string-aleatoria-bem-grande
 PUBLIC_URL=https://seu-projeto.vercel.app
+
+# Shopee
+SHOPEE_API_URL=https://hwdahtwlpjlwrmkgimvq.supabase.co/functions/v1/shopee-extractor
+
+# Supabase (banco de usuários e pagamentos)
+SUPABASE_URL=https://xxxxxxxx.supabase.co
+SUPABASE_SERVICE_KEY=eyJhbGciOi...
+
+# Mercado Pago (plano Premium)
+MP_ACCESS_TOKEN=APP_USR-xxxxxxxxxxxx
+MP_WEBHOOK_SECRET=uma-string-aleatoria
+PREMIUM_PRICE_CENTS=990
+PUBLIC_BASE_URL=https://seu-projeto.vercel.app
 ```
 
-> Gere um secret forte com `openssl rand -hex 32` (ou qualquer gerador de strings aleatórias).
+> Gere secrets fortes com `openssl rand -hex 32` (ou qualquer gerador de strings aleatórias).
+
+### 1.1. Preparar o Supabase
+
+1. Crie um projeto em [supabase.com](https://supabase.com).
+2. Em **Project Settings → API**, copie a `URL` e a `service_role key`.
+3. Abra o **SQL Editor**, cole o conteúdo de `scripts/schema.sql` e clique em *Run*.
+
+### 1.2. Preparar o Mercado Pago
+
+1. Acesse [developers.mercadopago.com.br](https://www.mercadopago.com.br/developers/panel/app) e crie uma aplicação.
+2. Em **Credenciais de produção**, copie o `Access Token` para `MP_ACCESS_TOKEN`.
+3. Em **Webhooks**, configure:
+   - URL: `https://<seu-projeto>.vercel.app/api/mp-webhook`
+   - Eventos: marque **"Pagamentos"** (`payment`).
+   - Copie o secret gerado para `MP_WEBHOOK_SECRET`.
 
 ---
 
@@ -90,11 +123,18 @@ vercel --prod       # publica em produção
 
 No painel da Vercel: **Project → Settings → Environment Variables**
 
-| Nome                       | Valor                                       |
-| -------------------------- | ------------------------------------------- |
-| `BOT_TOKEN`                | token do @BotFather                         |
-| `SHOPEE_API_URL`           | URL da API extratora                        |
-| `TELEGRAM_WEBHOOK_SECRET`  | string aleatória forte                      |
+| Nome                       | Valor                                            |
+| -------------------------- | ------------------------------------------------ |
+| `BOT_TOKEN`                | token do @BotFather                              |
+| `BOT_USERNAME`             | username do bot (sem @), usado no link de retorno |
+| `SHOPEE_API_URL`           | URL da API extratora                             |
+| `TELEGRAM_WEBHOOK_SECRET`  | string aleatória forte                           |
+| `SUPABASE_URL`             | URL do projeto Supabase                          |
+| `SUPABASE_SERVICE_KEY`     | service_role key do Supabase                     |
+| `MP_ACCESS_TOKEN`          | Access Token de produção do Mercado Pago         |
+| `MP_WEBHOOK_SECRET`        | secret do webhook configurado no painel do MP    |
+| `PREMIUM_PRICE_CENTS`      | preço do plano em centavos (default `990`)       |
+| `PUBLIC_BASE_URL`          | URL pública da Vercel (mesmo valor de `PUBLIC_URL`) |
 
 > **Não** coloque `PUBLIC_URL` na Vercel — ele só é usado pelo script local que registra o webhook.
 
@@ -148,11 +188,26 @@ npm run delete-webhook
 
 ## 5. Comandos do bot
 
-| Comando      | Descrição                                |
-| ------------ | ---------------------------------------- |
-| `/start`     | Boas-vindas e instruções básicas.        |
-| `/help`      | Resumo de como usar o bot.               |
-| (qualquer link) | Tenta extrair o vídeo da Shopee.      |
+| Comando         | Descrição                                                      |
+| --------------- | -------------------------------------------------------------- |
+| `/start`        | Boas-vindas e instruções básicas.                              |
+| `/help`         | Resumo de como usar o bot.                                     |
+| `/status`       | Mostra o plano atual e quantos downloads restam hoje.          |
+| `/upgrade`      | Gera link de pagamento (Checkout Pro do Mercado Pago).         |
+| (qualquer link) | Tenta extrair o vídeo da Shopee.                               |
+
+### Planos
+
+- **Gratuito**: 10 downloads por dia (reset diário automático).
+- **Premium**: R$ 9,90 (configurável via `PREMIUM_PRICE_CENTS`) — downloads ilimitados por 30 dias. Ao expirar, o usuário volta ao plano gratuito automaticamente.
+
+### Fluxo de pagamento
+
+1. Usuário envia `/upgrade`.
+2. Bot cria uma `Preference` no Mercado Pago e responde com o link de pagamento (PIX, cartão ou boleto).
+3. Usuário paga.
+4. Mercado Pago notifica `https://<seu-projeto>.vercel.app/api/mp-webhook`.
+5. O webhook valida assinatura, consulta o pagamento, ativa 30 dias de premium e avisa o usuário no Telegram.
 
 ---
 

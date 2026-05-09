@@ -1,12 +1,17 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/webhook", "destination": "/api/webhook" }
+    { "source": "/api/webhook", "destination": "/api/webhook" },
+    { "source": "/api/mp-webhook", "destination": "/api/mp-webhook" }
   ],
   "functions": {
     "api/webhook.js": {
       "maxDuration": 60,
       "memory": 1024
+    },
+    "api/mp-webhook.js": {
+      "maxDuration": 30,
+      "memory": 512
     }
   }
 }
